@@ -51,7 +51,7 @@ rm -f "$zip"
 step "zip contents"
 listing=$(unzip -Z1 "$zip")
 echo "$listing"
-for required in blender_manifest.toml __init__.py ui.py core/batch.py core/writers/ktx2.py; do
+for required in blender_manifest.toml LICENSE __init__.py ui.py core/batch.py core/writers/ktx2.py; do
   grep -qx "$required" <<<"$listing" || fail "$required missing from $zip"
 done
 if grep -E '(^|/)(cli\.py|__pycache__/|tests/)' <<<"$listing"; then
