@@ -43,8 +43,9 @@ uvx ruff check extension scripts tests
 
 step "extension validate + build"
 "$BLENDER" -b --factory-startup --command extension validate extension
+mkdir -p dist
 rm -f "$zip"
-"$BLENDER" -b --factory-startup --command extension build --source-dir extension --output-dir dist
+"$BLENDER" -b --factory-startup --command extension build --source-dir extension --output-dir "$PWD/dist"
 [ -f "$zip" ] || fail "build did not produce $zip"
 
 step "zip contents"
