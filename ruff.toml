@@ -1,0 +1,12 @@
+# Pinned here so release checks do not depend on a user-level ruff config.
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]  # long lines are the existing style
+
+[lint.per-file-ignores]
+# Repository scripts put the extension on sys.path before importing it.
+"scripts/*" = ["E402"]
+"tests/*" = ["E402"]

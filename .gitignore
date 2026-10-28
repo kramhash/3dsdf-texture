@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+samples/out/
+.DS_Store
+dist/
+# Only the r16f sample is committed; build.sh regenerates the others.
+viewer-three/public/sdf/Suzanne.r8.sdf.ktx2
+viewer-three/public/sdf/Suzanne.r32f.sdf.ktx2
+.ruff_cache/

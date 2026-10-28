@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "bboxMin": [
+    -1.4143305500348409,
+    -1.0763729572296143,
+    -0.9061275660991669
+  ],
+  "bboxMax": [
+    1.4143306692441304,
+    1.0451229572296143,
+    0.9501813590526581
+  ],
+  "voxelSize": 0.022098915775616963,
+  "units": "local",
+  "axis": "y_up_gltf",
+  "sign": "negative_inside",
+  "decode": {
+    "scale": 1.0,
+    "offset": 0.0
+  },
+  "source": {
+    "object": "Suzanne",
+    "triangles": 3936,
+    "backend": "gpu"
+  },
+  "dims": [
+    128,
+    96,
+    84
+  ],
+  "format": "r16f",
+  "layout": {
+    "columns": 12,
+    "rows": 7,
+    "sliceOrder": "z_ascending_row_major",
+    "row0": "y_min"
+  },
+  "files": {
+    "godot": "Suzanne.sdf.exr"
+  }
+}

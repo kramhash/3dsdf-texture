@@ -1,0 +1,20 @@
+schema_version = "1.0.0"
+
+id = "sdf_texture"
+version = "0.1.0"
+name = "SDF Texture"
+tagline = "Bake meshes into 3D signed distance field textures"
+maintainer = "kramhash <mark@kramhash.net>"
+website = "https://github.com/kramhash/3dsdf-texture"
+type = "add-on"
+tags = ["Mesh", "Import-Export"]
+
+blender_version_min = "5.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+files = "Write SDF texture files to the chosen output folder"
+
+[build]
+paths_exclude_pattern = ["__pycache__/", "/.git/", "*.zip"]
