@@ -1,8 +1,9 @@
-"""KTX2 target: one uncompressed 3D texture with the metadata in key/value data.
+"""KTX2 target: one 3D texture with the metadata in key/value data.
 
 Layout is fixed by docs/format.md: R8_UNORM / R16_SFLOAT / R32_SFLOAT, one
-level, x fastest, row 0 = y min, slice 0 = z min. Written with struct so the
-extension needs no libktx.
+level, x fastest, row 0 = y min, slice 0 = z min, level 0 optionally Zstandard
+supercompressed. Written with struct so the extension needs no libktx; zstd
+comes from the `zstandard` module bundled with Blender.
 """
 
 from __future__ import annotations
@@ -22,6 +23,9 @@ _MANIFEST = Path(__file__).resolve().parents[2] / "blender_manifest.toml"
 WRITER = f"3dsdf-texture {tomllib.loads(_MANIFEST.read_text())['version']}"
 
 _HEADER_SIZE = 80
+_SUPERCOMPRESSION_ZSTD = 2
+# Written once per bake, so compress hard: level 19 costs ~0.2 s on a 2 MB level.
+ZSTD_LEVEL = 19
 _LEVEL_INDEX_SIZE = 24
 
 # Khronos Data Format constants used by the single-sample basic descriptor.
@@ -41,14 +45,20 @@ _FORMATS: dict[np.dtype, tuple[int, str]] = {
 }
 
 
-def write(path: Path, values: np.ndarray, meta: dict[str, Any]) -> None:
+def write(path: Path, values: np.ndarray, meta: dict[str, Any], zstd: bool = False) -> None:
     """values: [z, y, x] array of uint8, float16 or float32."""
     if values.dtype not in _FORMATS:
         raise ValueError(f"no KTX2 format for dtype {values.dtype}")
     vk_format, le_dtype = _FORMATS[values.dtype]
     type_size = values.dtype.itemsize
     nz, ny, nx = values.shape
-    data = np.ascontiguousarray(values, dtype=le_dtype).tobytes()
+    raw = np.ascontiguousarray(values, dtype=le_dtype).tobytes()
+    if zstd:
+        import zstandard
+
+        data, scheme = zstandard.ZstdCompressor(level=ZSTD_LEVEL).compress(raw), _SUPERCOMPRESSION_ZSTD
+    else:
+        data, scheme = raw, 0
 
     dfd = _dfd(values.dtype, type_size)
     kvd = _kvd(
@@ -64,10 +74,10 @@ def write(path: Path, values: np.ndarray, meta: dict[str, Any]) -> None:
     level_offset = _align(kvd_offset + len(kvd), 4)
 
     header = IDENTIFIER + struct.pack(
-        "<9I", vk_format, type_size, nx, ny, nz, 0, 1, 1, 0
-    )  # layerCount 0, faceCount 1, levelCount 1, no supercompression
+        "<9I", vk_format, type_size, nx, ny, nz, 0, 1, 1, scheme
+    )  # layerCount 0, faceCount 1, levelCount 1
     header += struct.pack("<4I2Q", dfd_offset, len(dfd), kvd_offset, len(kvd), 0, 0)
-    level_index = struct.pack("<3Q", level_offset, len(data), len(data))
+    level_index = struct.pack("<3Q", level_offset, len(data), len(raw))
     padding = bytes(level_offset - (kvd_offset + len(kvd)))
     path.write_bytes(header + level_index + dfd + kvd + padding + data)
 

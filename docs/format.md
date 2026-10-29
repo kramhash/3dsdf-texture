@@ -29,7 +29,9 @@ Godot cannot load non-2D KTX files (`modules/ktx/texture_loader_ktx.cpp` rejects
 
 ## KTX2 (`<name>.sdf.ktx2`)
 
-- KTX 2.0, uncompressed (`supercompressionScheme = 0`, `sgdByteLength = 0`).
+- KTX 2.0, `sgdByteLength = 0`, and `supercompressionScheme` is one of:
+  - `0`: uncompressed (the default).
+  - `2` (Zstandard, opt-in with *Zstd Compression* / `--zstd`): level 0 is one zstd frame. Its level index has `byteLength` = compressed size and `uncompressedByteLength` = the uncompressed level size; the header, DFD and key/value data are not compressed. It pays off mainly for `r8` (about 30% of the uncompressed size, against about 75% for `r16f` and 90% for `r32f`).
 - `vkFormat` / `typeSize` is one of:
 
   | `vkFormat` | Format | `typeSize` | `format` |
@@ -41,7 +43,7 @@ Godot cannot load non-2D KTX files (`modules/ktx/texture_loader_ktx.cpp` rejects
 - `pixelWidth`, `pixelHeight`, `pixelDepth` hold nx, ny, nz (all ≥ 1).
 - The other header values are `layerCount = 0`, `faceCount = 1`, `levelCount = 1`.
 - The DFD is a basic descriptor with one sample (RED), 44 bytes in total: model RGBSDA, primaries UNSPECIFIED, transfer LINEAR. Readers need not interpret it.
-- Level 0 starts on a 4-byte boundary and is laid out as:
+- Level 0 starts on a 4-byte boundary and, once decompressed, is laid out as:
   - x fastest,
   - then y, row 0 being y min,
   - then z, slice 0 being z min.
@@ -102,6 +104,7 @@ Readers fail with an error naming the offending field when:
 
 - `3dsdf.meta` `version` is not 1,
 - `vkFormat` is not one of the three above,
-- `supercompressionScheme` is not 0,
+- `supercompressionScheme` is neither 0 nor 2,
+- `supercompressionScheme` is 2 and the reader has no Zstandard decoder, or the decoded level is not `uncompressedByteLength` bytes,
 - `pixelDepth` is 0,
 - `3dsdf.meta` is missing.

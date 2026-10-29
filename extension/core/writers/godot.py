@@ -1,12 +1,14 @@
 """Godot target: slice atlas image plus a `.import` that selects the Texture3D importer.
 
-r16f/r32f -> single-channel half/float EXR, r8 -> 8-bit grayscale PNG. The `.import`
-file only carries [remap] and [params]; Godot fills in uid and cache paths on
-first import.
+r16f/r32f -> single-channel half/float EXR, r8 -> 8-bit grayscale PNG. A new
+`.import` only carries [remap] and [params]; Godot fills in uid and cache paths on
+first import. On re-export an existing `.import` keeps everything Godot wrote and
+only gets its slice counts updated, so the resource uid survives.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -36,8 +38,19 @@ def write(out_dir: Path, stem: str, values: np.ndarray) -> Path:
     else:
         write_png_gray8(image_path, atlas)
 
-    image_path.with_name(image_path.name + ".import").write_text(_import_file(cols, rows))
+    import_path = image_path.with_name(image_path.name + ".import")
+    existing = import_path.read_text() if import_path.exists() else None
+    import_path.write_text(_update_import_file(existing, cols, rows) if existing else _import_file(cols, rows))
     return image_path
+
+
+def _update_import_file(text: str, cols: int, rows: int) -> str:
+    """Rewrite the slice counts in place; fall back to a fresh file if either key is missing."""
+    for key, value in (("horizontal", cols), ("vertical", rows)):
+        text, n = re.subn(rf"^slices/{key}=.*$", f"slices/{key}={value}", text, flags=re.MULTILINE)
+        if n != 1:
+            return _import_file(cols, rows)
+    return text
 
 
 def _import_file(cols: int, rows: int) -> str:

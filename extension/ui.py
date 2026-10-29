@@ -2,14 +2,66 @@
 
 from __future__ import annotations
 
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import bpy
+from bpy.app.handlers import persistent
 
-from .core.bake import BakeSettings
+from .core.bake import TRIANGLE_WARN_LIMIT, BakeSettings
 from .core.batch import BatchBake
 from .core.export import ExportSettings
 from .core.pipeline import BAKEABLE_TYPES, NameCollisionError
+
+# Without a modal tick for this long the panel stops showing a bake as running:
+# the modal dies without cleanup when another .blend is opened.
+LIVE_TIMEOUT = 5.0
+
+
+@dataclass
+class _Live:
+    text: str
+    factor: float
+    updated: float
+
+
+@dataclass(frozen=True)
+class _Last:
+    icon: str
+    text: str
+    warnings: int
+    out_dir: str
+
+
+# Session-only panel state, never saved into the .blend.
+_live: _Live | None = None
+_last: _Last | None = None
+
+
+def _baking() -> bool:
+    return _live is not None and time.monotonic() - _live.updated < LIVE_TIMEOUT
+
+
+def _format_seconds(seconds: float) -> str:
+    seconds = round(seconds)
+    return f"{seconds // 60} min {seconds % 60} s" if seconds >= 60 else f"{seconds} s"
+
+
+def _redraw_sidebars(context) -> None:
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == "VIEW_3D":
+                for region in area.regions:
+                    if region.type == "UI":
+                        region.tag_redraw()
+
+
+@persistent
+def _clear_state(_filepath) -> None:
+    global _live, _last
+    _live = None
+    _last = None
 
 
 class SDFTEXTURE_PG_settings(bpy.types.PropertyGroup):
@@ -54,6 +106,11 @@ class SDFTEXTURE_PG_settings(bpy.types.PropertyGroup):
         max=128.0,
     )
     target_ktx2: bpy.props.BoolProperty(name="KTX2 (.ktx2)", default=True)
+    ktx2_zstd: bpy.props.BoolProperty(
+        name="Zstd Compression",
+        description="Supercompress the KTX2 with Zstandard; readers must be able to decompress it",
+        default=False,
+    )
     target_godot: bpy.props.BoolProperty(name="Godot (slice atlas)", default=True)
     output_dir: bpy.props.StringProperty(
         name="Output", subtype="DIR_PATH", default="//sdf/", options={"PATH_SUPPORTS_BLEND_RELATIVE"}
@@ -94,7 +151,12 @@ class SDFTEXTURE_OT_bake(bpy.types.Operator):
                 [o for o in selected if o.type in BAKEABLE_TYPES],
                 context.evaluated_depsgraph_get,
                 BakeSettings(resolution=s.resolution, padding=s.padding, backend=s.backend),
-                ExportSettings(value_format=s.value_format, band_voxels=s.band_voxels, targets=frozenset(targets)),
+                ExportSettings(
+                    value_format=s.value_format,
+                    band_voxels=s.band_voxels,
+                    targets=frozenset(targets),
+                    ktx2_zstd=s.ktx2_zstd,
+                ),
                 Path(bpy.path.abspath(s.output_dir)),
                 lambda level, message: self.report({level}, message),
             )
@@ -103,10 +165,34 @@ class SDFTEXTURE_OT_bake(bpy.types.Operator):
             return False
         return True
 
+    def _update_live(self) -> None:
+        global _live
+        batch = self._batch
+        eta = batch.eta()
+        left = f"{_format_seconds(eta)} left" if eta is not None else "estimating"
+        _live = _Live(
+            text=f"{batch.current_name} {batch.index + 1}/{len(batch.objects)} · {left}",
+            factor=batch.progress / max(1, len(batch.objects)),
+            updated=time.monotonic(),
+        )
+
     def _finish(self, context) -> set[str]:
-        level, message = self._batch.summary()
+        global _live, _last
+        batch = self._batch
+        level, message = batch.summary()
         self.report({level}, message)
-        return {"CANCELLED"} if self._batch.cancelled else {"FINISHED"}
+
+        baked, total = len(batch.baked), len(batch.objects)
+        if batch.cancelled:
+            icon, text = "CANCEL", f"Cancelled: {baked}/{total} baked"
+        elif batch.failed:
+            icon, text = "ERROR", f"{baked}/{total} baked, {len(batch.failed)} failed"
+        else:
+            icon, text = "CHECKMARK", f"{baked}/{total} baked"
+        _live = None
+        _last = _Last(icon, f"{text} · {_format_seconds(batch.elapsed)}", batch.warning_count, str(batch.out_dir))
+        _redraw_sidebars(context)
+        return {"CANCELLED"} if batch.cancelled else {"FINISHED"}
 
     def execute(self, context):
         # Scripted calls (bpy.ops without INVOKE) run to completion synchronously.
@@ -117,11 +203,15 @@ class SDFTEXTURE_OT_bake(bpy.types.Operator):
         return self._finish(context)
 
     def invoke(self, context, event):
+        global _last
         if not self._start(context):
             return {"CANCELLED"}
+        _last = None  # the previous result would read as this bake's
         wm = context.window_manager
         wm.progress_begin(0, len(self._batch.objects))
         self._timer = wm.event_timer_add(0.01, window=context.window)
+        self._update_live()
+        _redraw_sidebars(context)
         wm.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
@@ -137,6 +227,8 @@ class SDFTEXTURE_OT_bake(bpy.types.Operator):
                 context.workspace.status_text_set(
                     f"Baking SDF {position} {batch.current_name}: {batch.fraction:.0%}  (Esc to cancel)"
                 )
+                self._update_live()
+                _redraw_sidebars(context)
         if not batch.done:
             return {"PASS_THROUGH"}
 
@@ -172,6 +264,9 @@ class SDFTEXTURE_PT_panel(bpy.types.Panel):
 
         col = layout.column(heading="Targets")
         col.prop(s, "target_ktx2")
+        sub = col.column()
+        sub.active = s.target_ktx2
+        sub.prop(s, "ktx2_zstd")
         col.prop(s, "target_godot")
         row = layout.row()
         unsaved = _unsaved_relative(s.output_dir)
@@ -180,7 +275,47 @@ class SDFTEXTURE_PT_panel(bpy.types.Panel):
         if unsaved:
             layout.label(text="Save the .blend or use an absolute path", icon="ERROR")
 
-        layout.operator(SDFTEXTURE_OT_bake.bl_idname, icon="EXPORT")
+        _draw_triangles(layout, context)
+
+        if _baking():
+            layout.progress(factor=_live.factor, type="BAR", text=_live.text)
+            layout.label(text="Esc to cancel", icon="INFO")
+        else:
+            layout.operator(SDFTEXTURE_OT_bake.bl_idname, icon="EXPORT")
+
+        if _last is not None:
+            box = layout.box()
+            box.label(text=_last.text, icon=_last.icon)
+            if _last.warnings:
+                box.label(text=f"{_last.warnings} warning(s), see the Info log", icon="ERROR")
+            box.operator("wm.path_open", text="Open Output Folder", icon="FILE_FOLDER").filepath = _last.out_dir
+
+
+def _draw_triangles(layout, context) -> None:
+    """Triangle count of the selection, so a slow bake is visible before it starts."""
+    depsgraph = context.view_layer.depsgraph
+    total = 0
+    uncounted = 0
+    heavy = []
+    for obj in context.selected_objects:
+        if obj.type == "MESH":
+            count = len(obj.evaluated_get(depsgraph).data.loop_triangles)
+            total += count
+            if count > TRIANGLE_WARN_LIMIT:
+                heavy.append((obj.name, count))
+        elif obj.type in BAKEABLE_TYPES:
+            uncounted += 1
+    if not total and not uncounted:
+        return
+
+    col = layout.column(align=True)
+    text = f"Triangles: {total:,}"
+    if uncounted:
+        text += f" (+{uncounted} non-mesh not counted)"
+    col.label(text=text, icon="MESH_DATA")
+    for name, count in heavy:
+        # Kept short to fit the sidebar; the bake report carries the Decimate hint.
+        col.label(text=f"{name}: {count:,}, slow bake", icon="ERROR")
 
 
 classes = (SDFTEXTURE_PG_settings, SDFTEXTURE_OT_bake, SDFTEXTURE_PT_panel)
@@ -190,9 +325,12 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.sdf_texture = bpy.props.PointerProperty(type=SDFTEXTURE_PG_settings)
+    bpy.app.handlers.load_post.append(_clear_state)
 
 
 def unregister():
+    if _clear_state in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_clear_state)
     del bpy.types.Scene.sdf_texture
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

@@ -37,6 +37,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--format", choices=["r16f", "r32f", "r8"], default="r16f")
     p.add_argument("--band-voxels", type=float, default=8.0)
     p.add_argument("--targets", default="ktx2,godot", help="comma separated: ktx2,godot")
+    p.add_argument("--zstd", action="store_true", help="Zstandard-supercompress the KTX2 level data")
     return p.parse_args(argv)
 
 
@@ -77,7 +78,7 @@ def main() -> int:
             candidates,
             bpy.context.evaluated_depsgraph_get,
             BakeSettings(resolution=args.resolution, padding=args.padding, backend=args.backend),
-            ExportSettings(value_format=args.format, band_voxels=args.band_voxels, targets=targets),
+            ExportSettings(value_format=args.format, band_voxels=args.band_voxels, targets=targets, ktx2_zstd=args.zstd),
             args.out,
             report,
         )

@@ -23,5 +23,12 @@ cp samples/suzanne.glb viewer-three/public/sdf/
 for fmt in r16f r32f r8; do
   cp "samples/out/$fmt/Suzanne.sdf.ktx2" "viewer-three/public/sdf/Suzanne.$fmt.sdf.ktx2"
 done
+# One zstd-supercompressed variant, so the viewer's decoding path has a real file.
+"$BLENDER" -b --factory-startup --python-exit-code 1 --python scripts/bake_cli.py -- \
+  --input samples/suzanne.glb --out samples/out/r8-zstd --format r8 --targets ktx2 --zstd
+cp samples/out/r8-zstd/Suzanne.sdf.ktx2 viewer-three/public/sdf/Suzanne.r8-zstd.sdf.ktx2
 cp samples/suzanne.glb godot-sample/sdf/
-cp samples/out/r16f/Suzanne.sdf.{exr,exr.import,json} godot-sample/sdf/
+# Bake into the Godot project instead of copying, so a .import Godot has already
+# filled in (uid, cache paths) is updated rather than replaced.
+"$BLENDER" -b --factory-startup --python-exit-code 1 --python scripts/bake_cli.py -- \
+  --input samples/suzanne.glb --out godot-sample/sdf --format r16f --targets godot

@@ -5,6 +5,11 @@ import { read } from "three/examples/jsm/libs/ktx-parse.module.js"
 export type SdfFormat = "r8" | "r16f" | "r32f"
 
 const META_KEY = "3dsdf.meta"
+const SCHEME_NONE = 0
+const SCHEME_ZSTD = 2
+
+/** Decompress one zstd frame into `size` bytes. Injected so this module needs no decoder. */
+export type ZstdDecoder = (bytes: Uint8Array, size: number) => Uint8Array
 
 const VK_FORMATS: Record<
   number,
@@ -88,7 +93,8 @@ export function parseSdfMeta(
 
 /** Fetch `<name>.sdf.ktx2` into a linearly filtered Data3DTexture. */
 export async function loadSdf(
-  url: string
+  url: string,
+  options: { zstd?: ZstdDecoder } = {}
 ): Promise<{ meta: SdfMeta; texture: THREE.Data3DTexture }> {
   const res = await fetch(url)
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
@@ -96,9 +102,10 @@ export async function loadSdf(
 
   const vk = VK_FORMATS[container.vkFormat]
   if (!vk) throw new Error(`${url}: unsupported vkFormat ${container.vkFormat}`)
-  if (container.supercompressionScheme !== 0) {
+  const scheme = container.supercompressionScheme
+  if (scheme !== SCHEME_NONE && scheme !== SCHEME_ZSTD) {
     throw new Error(
-      `${url}: supercompressionScheme ${container.supercompressionScheme} (must be 0)`
+      `${url}: supercompressionScheme ${scheme} (must be 0 or 2)`
     )
   }
   if (container.pixelDepth === 0)
@@ -117,8 +124,22 @@ export async function loadSdf(
   ]
   const meta = parseSdfMeta(JSON.parse(metaText), dims, vk.format)
 
-  // levelData is a view into the file; copy so the typed array starts on an aligned offset.
-  const bytes = container.levels[0].levelData.slice()
+  const level = container.levels[0]
+  let bytes: Uint8Array
+  if (scheme === SCHEME_ZSTD) {
+    if (!options.zstd)
+      throw new Error(`${url}: zstd-compressed (scheme 2) but no zstd decoder was given`)
+    bytes = options.zstd(level.levelData, level.uncompressedByteLength)
+    if (bytes.byteLength !== level.uncompressedByteLength)
+      throw new Error(
+        `${url}: zstd level decoded to ${bytes.byteLength} bytes, expected ${level.uncompressedByteLength}`
+      )
+    // A decoder may return a view into a larger buffer; the typed arrays below need offset 0.
+    if (bytes.byteOffset !== 0 || bytes.buffer.byteLength !== bytes.byteLength) bytes = bytes.slice()
+  } else {
+    // levelData is a view into the file; copy so the typed array starts on an aligned offset.
+    bytes = level.levelData.slice()
+  }
   const data =
     vk.format === "r8"
       ? bytes

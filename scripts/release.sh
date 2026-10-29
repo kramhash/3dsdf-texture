@@ -34,7 +34,7 @@ git diff --exit-code --stat -- viewer-three/public/sdf godot-sample/sdf samples/
 
 step "ktx validate"
 command -v "$KTX_BIN" >/dev/null || fail "ktx not found; set KTX_BIN to KTX-Software's ktx"
-for fmt in r16f r32f r8; do
+for fmt in r16f r32f r8 r8-zstd; do
   "$KTX_BIN" validate "samples/out/$fmt/Suzanne.sdf.ktx2"
 done
 

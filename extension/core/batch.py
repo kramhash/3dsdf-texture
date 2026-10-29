@@ -18,6 +18,11 @@ from .pipeline import ObjectReport, bake_object_steps, plan_outputs
 # report(level, message), level being "INFO", "WARNING" or "ERROR" like bpy reports.
 Report = Callable[[str, str], None]
 
+# eta() stays None until this much time and progress have passed, so the first
+# (shader compile, setup) steps do not produce a wild estimate.
+ETA_MIN_SECONDS = 2.0
+ETA_MIN_PROGRESS = 0.02
+
 
 class BatchBake:
     def __init__(
@@ -45,7 +50,9 @@ class BatchBake:
         self.steps: Steps[ObjectReport] | None = None
         self.baked: list[ObjectReport] = []
         self.failed: list[str] = []
+        self.warning_count = 0
         self.cancelled = False
+        self.started = time.perf_counter()
 
     @property
     def done(self) -> bool:
@@ -59,6 +66,18 @@ class BatchBake:
     def progress(self) -> float:
         """Finished objects plus the current one's fraction, in object units."""
         return self.index + self.fraction
+
+    @property
+    def elapsed(self) -> float:
+        return time.perf_counter() - self.started
+
+    def eta(self) -> float | None:
+        """Seconds left, extrapolated linearly from overall progress; None while too early to tell."""
+        done = self.progress / max(1, len(self.objects))
+        elapsed = self.elapsed
+        if done < ETA_MIN_PROGRESS or elapsed < ETA_MIN_SECONDS:
+            return None
+        return elapsed * (1.0 - done) / done
 
     def advance(self, budget: float = 0.05) -> bool:
         """Run steps for about `budget` seconds (at least one step); return done."""
@@ -95,9 +114,7 @@ class BatchBake:
                     self.export_settings,
                     self.out_dir,
                     file_stem=self.stems[name],
-                    on_fallback=lambda reason: self.report(
-                        "WARNING", f"{name}: GPU failed ({reason}); baking on the CPU instead"
-                    ),
+                    on_fallback=lambda reason: self._warn(f"{name}: GPU failed ({reason}); baking on the CPU instead"),
                 )
             self.fraction = next(self.steps)
         except StopIteration as stop:
@@ -110,12 +127,16 @@ class BatchBake:
 
     def _finish_object(self, result: ObjectReport) -> None:
         for warning in result.warnings:
-            self.report("WARNING", warning)
+            self._warn(warning)
         dims = "x".join(map(str, result.result.grid.dims))
         files = ", ".join(p.name for p in result.files)
         self.report("INFO", f"{result.name}: {dims} {result.result.backend} -> {files}")
         self.baked.append(result)
         self._next()
+
+    def _warn(self, message: str) -> None:
+        self.warning_count += 1
+        self.report("WARNING", message)
 
     def _next(self) -> None:
         self.steps = None

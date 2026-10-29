@@ -6,7 +6,7 @@ A Blender 5.2 extension that bakes meshes into 3D signed distance field textures
 
 - Bakes each selected mesh, curve, text, surface or metaball (modifiers applied) in its local space, converted to glTF's Y-up so it lines up with an exported glb.
 - GPU (generalized winding number) or CPU fallback; the GPU sign stays correct on open meshes.
-- Writes an uncompressed 3D KTX2 (R8 / R16F / R32F) with its metadata inside, plus a slice atlas for Godot.
+- Writes a 3D KTX2 (R8 / R16F / R32F, optionally Zstandard-supercompressed) with its metadata inside, plus a slice atlas for Godot.
 
 ## Install
 
@@ -16,7 +16,8 @@ Download `sdf_texture-<version>.zip` from [Releases](https://github.com/kramhash
 
 **UI**: 3D Viewport → N panel → *SDF*. Pick resolution, format and targets, then *Bake SDF Texture*.
 
-- Baking runs in the background with progress in the status bar; Esc cancels and keeps the objects already finished.
+- The panel shows the selection's triangle count and flags objects over 50,000 triangles, which bake slowly.
+- Baking runs in the background with a progress bar and time estimate in the panel; Esc cancels and keeps the objects already finished. The last result stays in the panel with *Open Output Folder*.
 - An object that fails is reported by name and the rest keep baking. Types without geometry are skipped with a warning.
 - The default output `//sdf/` is relative to the .blend, so save the file first or choose an absolute folder.
 - Selections whose file names would collide (`Cube 1` / `Cube_1`, `Cube` / `cube`) are refused before baking. Existing files are overwritten.
@@ -26,14 +27,14 @@ Download `sdf_texture-<version>.zip` from [Releases](https://github.com/kramhash
 ```sh
 blender -b scene.blend --python scripts/bake_cli.py -- --out out/ \
   [--input model.glb] [--objects A B] [--resolution 128] [--padding 4] \
-  [--format r16f|r32f|r8] [--band-voxels 8] [--targets ktx2,godot] [--backend AUTO|GPU|CPU]
+  [--format r16f|r32f|r8] [--band-voxels 8] [--targets ktx2,godot] [--zstd] [--backend AUTO|GPU|CPU]
 ```
 
 ## Output
 
 | Target | Files |
 |---|---|
-| `ktx2` | `<name>.sdf.ktx2` — metadata in the `3dsdf.meta` key/value entry |
+| `ktx2` | `<name>.sdf.ktx2` — metadata in the `3dsdf.meta` key/value entry; uncompressed unless *Zstd Compression* / `--zstd` is on (worth it mainly for `r8`, and every reader then needs a zstd decoder) |
 | `godot` | `<name>.sdf.json`, `<name>.sdf.exr` or `.png` (slice atlas), `.import` (Texture3D import settings) |
 
 Distances are negative inside. The full layout, metadata schema and decode rule are in [docs/format.md](docs/format.md).
@@ -41,7 +42,7 @@ Distances are negative inside. The full layout, metadata schema and decode rule 
 ## Readers
 
 - **frapx**: `@frapx/glsl-sdf-volume` (planned for fx-canvas 1.1).
-- **three.js**: [viewer-three](viewer-three/) reads the KTX2 with three's bundled `ktx-parse` into a `Data3DTexture` and sphere-traces it (`pnpm dev`, `?sdf=...&glb=...&mode=sdf|mesh|both`).
+- **three.js**: [viewer-three](viewer-three/) reads the KTX2 with three's bundled `ktx-parse` (zstd through `fzstd`) into a `Data3DTexture` and sphere-traces it (`pnpm dev`, `?sdf=...&glb=...&mode=sdf|mesh|both`).
 - **Godot 4**: [godot-sample](godot-sample/) imports the atlas as a `Texture3D` and ray-marches it (keys 1/2/3 switch views).
 
 ## Development

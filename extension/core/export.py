@@ -18,6 +18,7 @@ class ExportSettings:
     value_format: encode.ValueFormat = "r16f"
     band_voxels: float = 8.0  # r8 only: clamp range in voxels on each side of the surface
     targets: frozenset[Target] = field(default_factory=lambda: frozenset({"ktx2", "godot"}))
+    ktx2_zstd: bool = False  # Zstandard supercompression of the KTX2 level data
 
 
 def export(
@@ -35,7 +36,7 @@ def export(
     stem = f"{name}.sdf"
     if "ktx2" in settings.targets:
         path = out_dir / f"{stem}.ktx2"
-        ktx2.write(path, values, common)
+        ktx2.write(path, values, common, zstd=settings.ktx2_zstd)
         written.append(path)
     if "godot" in settings.targets:
         image_path = godot.write(out_dir, stem, values)

@@ -1,6 +1,9 @@
+import { decompress } from "fzstd"
 import { useEffect, useState } from "react"
 import type * as THREE from "three"
-import { loadSdf, type SdfMeta } from "@/lib/sdf"
+import { loadSdf, type SdfMeta, type ZstdDecoder } from "@/lib/sdf"
+
+const zstd: ZstdDecoder = (bytes, size) => decompress(bytes, new Uint8Array(size))
 
 export type SdfState =
   | { status: "loading" }
@@ -14,7 +17,7 @@ export function useSdf(url: string): SdfState {
     let cancelled = false
     let texture: THREE.Data3DTexture | null = null
     setState({ status: "loading" })
-    loadSdf(url).then(
+    loadSdf(url, { zstd }).then(
       (loaded) => {
         texture = loaded.texture
         if (cancelled) {

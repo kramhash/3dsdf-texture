@@ -328,6 +328,25 @@ def format_switch_removes_stale_atlas():
 
 
 @test
+def reexport_keeps_godot_import_uid():
+    reset_scene()
+    tris = tris_of(mesh_object("Sphere", lambda bm: sphere(bm, segments=12, rings=6)))
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        export("Sphere", bake(tris, BakeSettings(resolution=16)), ExportSettings(), out)
+        import_path = out / "Sphere.sdf.exr.import"
+        # What Godot writes back on first import.
+        text = import_path.read_text().replace("[remap]\n", '[remap]\n\nuid="uid://bkeep"\npath="res://.godot/x"\n', 1)
+        import_path.write_text(text)
+        export("Sphere", bake(tris, BakeSettings(resolution=32)), ExportSettings(), out)
+        meta = json.loads((out / "Sphere.sdf.json").read_text())
+        updated = import_path.read_text()
+        assert 'uid="uid://bkeep"' in updated and 'path="res://.godot/x"' in updated, updated
+        assert f"slices/horizontal={meta['layout']['columns']}\n" in updated, updated
+        assert f"slices/vertical={meta['layout']['rows']}\n" in updated, updated
+
+
+@test
 def r16f_overflow_is_refused():
     reset_scene()
 
@@ -378,6 +397,91 @@ def cancel_writes_nothing_for_the_current_object():
         batch.cancel()
         assert batch.done and batch.summary() == ("WARNING", "Cancelled: 0/2 baked")
         assert not any(Path(tmp).iterdir())
+
+
+@test
+def ktx2_zstd_matches_uncompressed():
+    reset_scene()
+    tris = tris_of(mesh_object("Sphere", sphere))
+    r = bake(tris, BakeSettings(resolution=36, backend="GPU"))
+    with tempfile.TemporaryDirectory() as tmp:
+        for fmt in ("r8", "r16f"):
+            plain_dir, zstd_dir = Path(tmp) / fmt / "plain", Path(tmp) / fmt / "zstd"
+            export("Sphere", r, ExportSettings(value_format=fmt, targets=frozenset({"ktx2"})), plain_dir)
+            export("Sphere", r, ExportSettings(value_format=fmt, targets=frozenset({"ktx2"}), ktx2_zstd=True), zstd_dir)
+            plain = _read_ktx2(plain_dir / "Sphere.sdf.ktx2")
+            packed = _read_ktx2(zstd_dir / "Sphere.sdf.ktx2")
+            assert plain["supercompressionScheme"] == 0 and packed["supercompressionScheme"] == 2, fmt
+            assert packed["levelByteLength"] < len(packed["level0"]), (fmt, packed["levelByteLength"])
+            assert packed["level0"] == plain["level0"], fmt
+            assert packed["kv"] == plain["kv"], fmt
+            assert ({k: v for k, v in packed.items() if k not in ("supercompressionScheme", "levelByteLength", "level0", "kv")}
+                    == {k: v for k, v in plain.items() if k not in ("supercompressionScheme", "levelByteLength", "level0", "kv")}), fmt
+
+
+@test
+def eta_waits_for_progress_then_extrapolates():
+    reset_scene()
+    obj = mesh_object("Sphere", lambda bm: sphere(bm, segments=12, rings=6))
+    with tempfile.TemporaryDirectory() as tmp:
+        batch = _batch([obj], Path(tmp), BakeSettings(resolution=24, backend="CPU"))
+        assert batch.eta() is None
+        batch.advance(0.0)
+        assert 0.0 < batch.fraction < 1.0
+        batch.started -= 10.0  # pretend the first step took long enough to estimate from
+        eta = batch.eta()
+        assert eta is not None and eta > 0.0, eta
+        assert abs(eta - batch.elapsed * (1.0 - batch.fraction) / batch.fraction) < 0.1, eta
+
+
+@test
+def warnings_are_counted():
+    from core import pipeline
+
+    reset_scene()
+    obj = mesh_object("Sphere", lambda bm: sphere(bm, segments=12, rings=6))
+    limit = pipeline.TRIANGLE_WARN_LIMIT
+    pipeline.TRIANGLE_WARN_LIMIT = 10
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            batch = _batch([obj], Path(tmp), BakeSettings(resolution=16))
+            batch.advance(60.0)
+    finally:
+        pipeline.TRIANGLE_WARN_LIMIT = limit
+    assert batch.warning_count == 1, batch.messages
+    assert [m for level, m in batch.messages if level == "WARNING"][0].startswith("Sphere: "), batch.messages
+    assert batch.summary()[0] == "INFO", batch.summary()
+
+
+@test
+def operator_leaves_last_result_for_the_panel():
+    reset_scene()
+    sys.path.insert(0, str(ROOT))
+    import extension
+    from extension import ui
+
+    extension.register()
+    try:
+        obj = mesh_object("Sphere", lambda bm: sphere(bm, segments=12, rings=6))
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        s = bpy.context.scene.sdf_texture
+        with tempfile.TemporaryDirectory() as tmp:
+            s.output_dir = tmp + "/"
+            s.resolution = 16
+            assert bpy.ops.sdf_texture.bake() == {"FINISHED"}
+            assert ui._last is not None and ui._last.text.startswith("1/1 baked · "), ui._last
+            assert ui._last.icon == "CHECKMARK" and ui._last.out_dir == tmp, ui._last
+            assert not ui._baking()
+        # A stale live state (modal gone without cleanup) stops counting as a running bake.
+        ui._live = ui._Live("x", 0.5, time.monotonic() - ui.LIVE_TIMEOUT - 1.0)
+        assert not ui._baking()
+        ui._live = ui._Live("x", 0.5, time.monotonic())
+        assert ui._baking()
+        ui._clear_state(None)
+        assert ui._live is None and ui._last is None
+    finally:
+        extension.unregister()
 
 
 @test
@@ -466,8 +570,17 @@ def _read_ktx2(path: Path) -> dict:
         pos += 4 + (n + 3) // 4 * 4
     out["kv"] = kv
     level_off, level_len, level_ulen = struct.unpack_from("<3Q", data, 80)
-    assert level_off % 4 == 0 and level_len == level_ulen and level_off + level_len == len(data)
-    out["level0"] = data[level_off : level_off + level_len]
+    assert level_off % 4 == 0 and level_off + level_len == len(data)
+    level0 = data[level_off : level_off + level_len]
+    out["levelByteLength"] = level_len
+    if out["supercompressionScheme"] == 2:
+        import zstandard
+
+        level0 = zstandard.ZstdDecompressor().decompress(level0, max_output_size=level_ulen)
+    else:
+        assert out["supercompressionScheme"] == 0 and level_len == level_ulen
+    assert len(level0) == level_ulen
+    out["level0"] = level0
     return out
 
 
